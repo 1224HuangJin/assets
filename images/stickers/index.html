@@ -398,10 +398,12 @@
         .footer a {
             color: var(--accent);
             text-decoration: none;
+            transition: 0.2s;
         }
 
         .footer a:hover {
             text-decoration: underline;
+            color: var(--accent-hover);
         }
 
         @media (max-width: 600px) {
@@ -422,8 +424,8 @@
         <div class="toolbar">
             <div class="search-box">
                 <span class="icon-search">🔍</span>
-                <!-- 提示词修改，告知用户支持空格多词搜索 -->
-                <input type="text" id="searchInput" placeholder="搜索关键词 (可用空格分隔，如: 可爱 猫)..." oninput="renderGallery()">
+                <!-- 优化：将 oninput 绑定为具有防抖功能的 handleSearch -->
+                <input type="text" id="searchInput" placeholder="搜索关键词 (可用空格分隔，如: 可爱 猫)..." oninput="handleSearch()">
             </div>
             <div class="filter-area">
                 <div class="tag-filter" id="tagContainer">
@@ -439,7 +441,8 @@
             <p>© <span id="currentYear"></span> <span id="authorName">1224HuangJin</span>. 保留部分权利。</p>
             <p>本网站由 <strong>AI 生成</strong> · 代码基于 <a href="https://opensource.org/licenses/MIT" target="_blank">MIT 许可证</a> 开放使用</p>
             <p>GIF 内容版权归各自创作者所有，仅供个人收藏与分享。</p>
-            <p><a href= "https://github.com/1224HuangJin/assets/tree/main/images/stickers">在GitHub上查看</a></p>
+            <!-- 优化：赋予ID，由JS动态生成链接 -->
+            <p><a id="repoLink" href="#" target="_blank">在 GitHub 上查看</a></p>
         </footer>
     </div>
 
@@ -461,11 +464,12 @@
         const gifFolder = "images/stickers";       
         const branch = "main";
 
+        // 动态设置页脚信息
         document.getElementById('authorName').textContent = repoOwner;
         document.getElementById('currentYear').textContent = new Date().getFullYear();
+        document.getElementById('repoLink').href = `https://github.com/${repoOwner}/${repoName}/tree/${branch}/${gifFolder}`;
 
         // 🌟 核心优化：专门为你定制的中文标签库
-        // 只要你的文件名里包含后面数组里的任何一个词，就会被自动打上前方的标签！
         const customTags = {
             "可爱/萌": ["可爱", "傲娇", "害羞", "奶龙", "少女", "夸"],
             "猫猫": ["猫", "喵"],
@@ -481,15 +485,26 @@
         let allPics = [];
         let activeTag = "all";
 
-        // 获取指定目录下的图片列表
+        // 获取指定目录下的图片列表（带有本地缓存功能）
         async function loadImages() {
             try {
-                const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/trees/${branch}:${gifFolder}?recursive=1`;
-                const res = await fetch(apiUrl);    
-                if (!res.ok) throw new Error("API 请求失败");
-                const data = await res.json();
+                // 优化：尝试从 sessionStorage 读取缓存，防止频繁刷新被 GitHub API 限制
+                const cacheKey = `github_gifs_${repoOwner}_${repoName}_${branch}`;
+                const cachedData = sessionStorage.getItem(cacheKey);
+                let treeData;
 
-                allPics = data.tree
+                if (cachedData) {
+                    treeData = JSON.parse(cachedData); // 使用缓存数据
+                } else {
+                    const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/trees/${branch}:${gifFolder}?recursive=1`;
+                    const res = await fetch(apiUrl);    
+                    if (!res.ok) throw new Error("API 请求失败");
+                    const data = await res.json();
+                    treeData = data.tree;
+                    sessionStorage.setItem(cacheKey, JSON.stringify(treeData)); // 存入缓存
+                }
+
+                allPics = treeData
                     .filter(file => file.type === 'blob' && /\.(gif|png|jpg|jpeg|webp)$/i.test(file.path))
                     .map(file => {
                         const url = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${gifFolder}/${file.path}`;
@@ -504,15 +519,14 @@
                             }
                         }
                         
-                        // 如果没有匹配到任何标签，则放入"其他"
                         if (tags.length === 0) {
                             tags.push("其他");
                         }
 
-                        // 清除文件后缀名，方便页面展示名称
                         const cleanName = filename.replace(/\.(gif|png|jpg|jpeg|webp)$/i, '');
 
-                        return { ...file, url, filename, cleanName, tags };
+                        // 注意：这里保留了 file.path，以便稍后进行子文件夹搜索
+                        return { path: file.path, url, filename, cleanName, tags };
                     });
 
                 updateStats();
@@ -535,7 +549,6 @@
         // 生成分类标签按钮
         function generateTagButtons() {
             const allTags = new Set(["all"]);
-            // 确保我们按照自定义标签的顺序显示，最后显示"其他"
             Object.keys(customTags).forEach(tag => allTags.add(tag));
             allTags.add("其他");
 
@@ -545,7 +558,6 @@
             allTags.forEach(tag => {
                 if (tag === "all") return;
                 
-                // 检查该标签下是否有图片，如果有才显示该标签按钮
                 const hasImages = allPics.some(p => p.tags.includes(tag));
                 if (!hasImages) return;
 
@@ -570,16 +582,25 @@
             });
         }
 
-        // 渲染图库视图 (支持多关键词搜索)
+        // 优化：搜索防抖功能 (Debounce)
+        let searchTimeout;
+        function handleSearch() {
+            clearTimeout(searchTimeout);
+            // 用户停止打字 300 毫秒后，才执行渲染，避免页面卡顿
+            searchTimeout = setTimeout(() => {
+                renderGallery();
+            }, 300);
+        }
+
+        // 渲染图库视图
         function renderGallery() {
             const searchInput = document.getElementById('searchInput').value.toLowerCase().trim();
-            const searchTerms = searchInput.split(/\s+/).filter(term => term.length > 0); // 用空格分割搜索词
+            const searchTerms = searchInput.split(/\s+/).filter(term => term.length > 0);
 
             let filtered = allPics.filter(pic => {
-                // 将文件名和标签组合起来进行搜索匹配
-                const textToSearch = (pic.filename + " " + pic.tags.join(" ")).toLowerCase();
+                // 优化：将 pic.path 加回搜索字符串，这样就可以搜索子文件夹的名称了！
+                const textToSearch = (pic.path + " " + pic.filename + " " + pic.tags.join(" ")).toLowerCase();
                 
-                // 必须满足所有用空格隔开的搜索词
                 const matchSearch = searchTerms.every(term => textToSearch.includes(term));
                 const matchTag = activeTag === "all" || pic.tags.includes(activeTag);
                 
@@ -669,7 +690,7 @@
         function closeLightbox() {
             const lightbox = document.getElementById('lightbox');
             lightbox.classList.remove('active');
-            setTimeout(() => { document.getElementById('lightboxImg').src = ''; }, 300); // 等待动画完成
+            setTimeout(() => { document.getElementById('lightboxImg').src = ''; }, 300);
             document.body.classList.remove('no-scroll');
         }
 
